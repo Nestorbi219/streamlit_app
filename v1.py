@@ -9,7 +9,7 @@ st.set_page_config(
 
 
 # -----------------------------
-# Helpers
+# Список регионов-исключенний
 # -----------------------------
 EXCLUDE = {
     "российская федерация",
@@ -35,14 +35,14 @@ def load_data(file_path) -> pd.DataFrame:
     # читаем без заголовков: после первых 3 строк идут 2 строки "шапки"
     raw = pd.read_excel(file_path, header=None, skiprows=3)
 
-    # 0-я строка: тип товара (merged -> будут NaN)  -> протягиваем вправо
+    # 0-я строка: тип товара (merged -> будут NaN)  
     header_product = raw.iloc[0].copy()
     header_product = header_product.ffill()
 
     # 1-я строка: названия регионов (реальные колонки)
     header_region = raw.iloc[1].copy()
 
-    # данные начинаются с 2-й строки
+    # данные начинаются со 2-й строки
     df = raw.iloc[2:].copy()
 
     # собираем уникальные названия колонок
@@ -67,7 +67,7 @@ def load_data(file_path) -> pd.DataFrame:
     df.columns = cols
 
     # -------------------------------------------------
-    # ВАЖНО: убираем из колонок РФ и федеральные округа
+    # убираем из колонок РФ и федеральные округа
     # используя EXCLUDE
     # -------------------------------------------------
     cols_keep = ["region_from"]
@@ -97,7 +97,7 @@ def load_data(file_path) -> pd.DataFrame:
 
 
 def remove_aggregates(df: pd.DataFrame) -> pd.DataFrame:
-    # Первый столбец — это region_from (у тебя "субъект рф (ввоз)")
+    # Первый столбец — это region_from 
     first_col = df.columns[0]
 
     # чистим строки
@@ -128,13 +128,13 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
         value_name="value",
     )
 
-     # разбираем "Товар | Регион" (ВАЖНО: split по ЛИТЕРАЛЬНОМУ "|" )
+     # разбираем "Товар | Регион"  
     pr = df_long["prod_region"].astype(str).str.split("|", n=1, expand=True, regex=False)
 
     df_long["product"] = pr[0].astype(str).str.strip()
     df_long["region_to"] = pr[1].astype(str).str.strip()
 
-    # если вдруг где-то не нашёлся разделитель — подстрахуемся
+    # если вдруг где-то не нашёлся разделитель  
     mask_bad = df_long["region_to"].isin(["", "None", "nan", "<NA>"])
     df_long.loc[mask_bad, "region_to"] = df_long.loc[mask_bad, "prod_region"].astype(str).str.strip()
 
@@ -151,7 +151,7 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
     df_long = df_long[df_long["region_from"] != df_long["region_to"]]
 
     # -----------------------------------
-    # УБИРАЕМ АГРЕГАТЫ ПОСЛЕ SPLIT !!!
+    # УБИРАЕМ АГРЕГАТЫ ПОСЛЕ SPLIT  
     # -----------------------------------
     df_long = df_long[
         ~df_long["region_from"].str.lower().isin(EXCLUDE)
@@ -199,10 +199,10 @@ st.subheader("Объединённый датасет")
 st.caption(f"Файлов загружено: {len(uploaded_files)} | Строк всего: {len(df)}")
 
 # -----------------------------
-# UI (теперь один раз, без цикла)
+# UI  
 # -----------------------------
 rows_to_show = st.slider(
-    "Сколько строк показать (таблица)",
+    "Выберите количество отображаемых строк",
     min_value=10,
     max_value=300,
     value=100,
