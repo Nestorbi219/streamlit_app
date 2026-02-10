@@ -4,17 +4,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# -----------------------------
-# Page
-# -----------------------------
+# Страница
 st.set_page_config(
     page_title="Анализ межрегиональной торговли",
     layout="wide",
 )
 
-# -----------------------------
+
 # Список регионов-исключений
-# -----------------------------
 EXCLUDE = {
     "российская федерация",
     "центральный федеральный округ",
@@ -32,9 +29,7 @@ EXCLUDE = {
     "тюменская область (кроме ханты-мансийского автономного округа - югры и ямало-ненецкого автономного округа)",
 }
 
-# -----------------------------
-# Helpers: data
-# -----------------------------
+# Датасет
 def load_data(file_path) -> pd.DataFrame:
     # читаем без заголовков: после первых 3 строк идут 2 строки "шапки"
     raw = pd.read_excel(file_path, header=None, skiprows=3)
@@ -68,9 +63,7 @@ def load_data(file_path) -> pd.DataFrame:
 
     df.columns = cols
 
-    # -------------------------------------------------
     # убираем из колонок РФ и федеральные округа
-    # -------------------------------------------------
     cols_keep = ["region_from"]
     for c in df.columns[1:]:
         s = str(c)
@@ -149,36 +142,34 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
     return df_long
 
 
-# -----------------------------
-# Helpers: indices
-# -----------------------------
+#  Расчет индексов 
 def compute_wbi_indices(
     df_long: pd.DataFrame,
     quota_q: float,
     top_in_neighbors: int = 15,
 ) -> pd.DataFrame:
     """
-    wBI1 / wBI2 (Aleskerov & Tkachev, 2025)
+    wBI1 / wBI2
 
     Вершина i = region_to (получатель).
     Вес ребра w_{ji} = поставки (тонн) из region_from=j в region_to=i.
 
     Критическая группа S для i: сумма входящих поставок от S >= q.
-    Без ограничения на размер группы → комбинаторика, поэтому берём топ-N входящих поставщиков.
+    Без ограничения на размер группы
     """
     edges = (
         df_long.groupby(["region_from", "region_to"], as_index=False)["value"]
         .sum()
         .rename(columns={"value": "w"})
-    )
+    ) # Агрегация нужна что бы не считать одно ребро два раза
 
-    total_weight_network = float(edges["w"].sum())
+    total_weight_network = float(edges["w"].sum()) # Общий вес сети. Знаменатель wBI_2
     if total_weight_network <= 0:
         return pd.DataFrame(columns=["region", "wBI1", "wBI2", "in_weight", "in_neighbors_used", "critical_groups_count"])
 
     regions = sorted(set(edges["region_from"]).union(set(edges["region_to"])))
 
-    results = []
+    results = []  # Знаменатель wBI_1
     for region_i in regions:
         inc = edges[edges["region_to"] == region_i].copy()
         inc = inc[inc["w"] > 0]
@@ -197,7 +188,7 @@ def compute_wbi_indices(
             )
             continue
 
-        inc = inc.sort_values("w", ascending=False).head(int(top_in_neighbors))
+        inc = inc.sort_values("w", ascending=False).head(int(top_in_neighbors)) # Ограничение сложности расчета для ускорения по топ поставщикам
 
         # список входящих поставщиков (region_from)
         in_neighbors = tuple(inc["region_from"].astype(str).tolist())
@@ -209,12 +200,12 @@ def compute_wbi_indices(
         wbi2_i = 0.0
         critical_groups_count = 0
 
-        for r in range(1, m + 1):
+        for r in range(1, m + 1): # Расчет потенциальных критических групп 
             for idxs in itertools.combinations(range(m), r):
                 s = 0.0
-                for t in idxs:
+                for t in idxs: # 
                     s += weights[t]
-                if s >= quota_q:
+                if s >= quota_q: # Если вес S >= q - группа критическая
                     critical_groups_count += 1
                     wbi1_i += s / in_weight
                     wbi2_i += s / total_weight_network
@@ -226,7 +217,7 @@ def compute_wbi_indices(
                 wBI2=float(wbi2_i),
                 in_weight=float(in_weight),
                 in_neighbors_used=int(m),
-                in_neighbors=in_neighbors,  # ← НОВОЕ
+                in_neighbors=in_neighbors,  
                 critical_groups_count=int(critical_groups_count),
             )
         )
@@ -234,9 +225,7 @@ def compute_wbi_indices(
     return pd.DataFrame(results).sort_values("wBI1", ascending=False)
 
 
-# -----------------------------
-# Helpers: unified chart style (dark)
-# -----------------------------
+# Cтиль  чартов 
 def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
     # максимально совместимый стиль (не использует спорные поля типа titlefont)
     fig.update_layout(
@@ -274,9 +263,7 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
 
 
 
-# -----------------------------
-# UI
-# -----------------------------
+# Интерфейс
 st.title("Анализ межрегиональной торговли основными пищевыми продуктами и зерном")
 
 with st.sidebar:
@@ -321,9 +308,8 @@ if not uploaded_files:
     st.info("Загрузи один или несколько Excel-файлов.")
     st.stop()
 
-# -----------------------------
-# UNION ALL: читаем все файлы и склеиваем строки
-# -----------------------------
+# UNION. Читаем все файлы и склеиваем строки
+
 dfs = [load_data(f) for f in uploaded_files]
 df = pd.concat(dfs, ignore_index=True)
 df = remove_aggregates(df)
@@ -341,9 +327,9 @@ rows_to_show = st.slider(
 )
 st.dataframe(df.head(rows_to_show), use_container_width=True)
 
-# -----------------------------
+
 # Выбор регионов-источников (region_from)
-# -----------------------------
+
 region_col = df.columns[0]
 region_values = sorted(
     df[region_col].dropna().astype(str).str.strip().unique().tolist()
@@ -368,14 +354,12 @@ if not selected_regions:
     st.warning("Выбери хотя бы один регион.")
     st.stop()
 
-# -----------------------------
-# Long-format
-# -----------------------------
+
 df_long = build_long(df)
 
-# -----------------------------
+
 # Фильтр по типу товара
-# -----------------------------
+
 products = sorted(df_long["product"].dropna().unique().tolist())
 product_selected = st.selectbox(
     "Тип товара",
@@ -398,9 +382,8 @@ if df_long_f.empty:
     st.info("После фильтрации по регионам/товару не осталось данных.")
     st.stop()
 
-# ==========================================================
-# 1) СНАЧАЛА ГРАФИК СУММАРНЫХ ПОСТАВОК (СТИЛЬ = КАК У ИНДЕКСОВ)
-# ==========================================================
+
+#  СНАЧАЛА ГРАФИК СУММАРНЫХ ПОСТАВОК 
 st.subheader("Суммарные поставки → регионы-партнёры")
 
 partners = (
@@ -443,7 +426,7 @@ fig_supply = px.bar(
 )
 
 fig_supply.update_traces(
-    marker_color="#74b9ff",  # тот же “неоново-голубой” из твоего графика индексов
+    marker_color="#74b9ff",  # “неоново-голубой” 
     texttemplate="%{text:,.0f}".replace(",", " "),
     hovertemplate="<b>%{y}</b><br>%{x:,.0f}".replace(",", " ") + " тонн<extra></extra>",
 )
@@ -458,9 +441,8 @@ fig_supply = apply_dark_style(
 
 st.plotly_chart(fig_supply, use_container_width=True)
 
-# ==========================
-# 2) ПОТОМ РАСЧЁТ ИНДЕКСОВ
-# ==========================
+
+#  РАСЧЁТ ИНДЕКСОВ
 st.subheader("Weighted Bundle Index 1 (wBI1)")
 st.caption(
     "Вершины: регионы. Вес ребра: поставки (тонн) из region_from в region_to. "
@@ -519,9 +501,8 @@ fig_wbi = apply_dark_style(
 
 st.plotly_chart(fig_wbi, use_container_width=True)
 
-# ==========================
-# 3) ГРАФИК wBI2
-# ==========================
+
+# ГРАФИК wBI2
 st.subheader("Weighted Bundle Index 2 (wBI2)")
 
 plot_df_wbi2 = (
