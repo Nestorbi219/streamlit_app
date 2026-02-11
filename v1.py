@@ -165,7 +165,11 @@ def compute_wbi_indices(
 
     total_weight_network = float(edges["w"].sum()) # Общий вес сети. Знаменатель wBI_2
     if total_weight_network <= 0:
-        return pd.DataFrame(columns=["region", "wBI1", "wBI2", "in_weight", "in_neighbors_used", "critical_groups_count"])
+        # return pd.DataFrame(columns=["region", "wBI1", "wBI2", "in_weight", "in_neighbors_used", "critical_groups_count"])
+        return pd.DataFrame(columns=[
+            "region", "wBI1", "wBI2", "in_weight", "in_neighbors_used",
+            "critical_groups_count", "critical_groups_top3", "critical_groups_top3_supply"
+        ])
 
     regions = sorted(set(edges["region_from"]).union(set(edges["region_to"])))
 
@@ -199,8 +203,9 @@ def compute_wbi_indices(
         wbi1_i = 0.0
         wbi2_i = 0.0
         critical_groups_count = 0
+        critical_groups = []  # тут будем хранить сами критические группы: (sum_supply, tuple(names))
 
-        for r in range(1, m + 1): # Расчет потенциальных критических групп 
+        for r in range(1, m + 1): # Расчет потенциальных критических групп
             for idxs in itertools.combinations(range(m), r):
                 s = 0.0
                 for t in idxs: # 
@@ -209,6 +214,14 @@ def compute_wbi_indices(
                     critical_groups_count += 1
                     wbi1_i += s / in_weight
                     wbi2_i += s / total_weight_network
+                    names = tuple(in_neighbors[t] for t in idxs)
+                    critical_groups.append((float(s), names))
+
+        # Топ-3 критические группы по максимальному суммарному весу s
+        critical_groups_sorted = sorted(critical_groups, key=lambda x: x[0], reverse=True)[:3]
+
+        critical_groups_top3 = ",".join(["{" + ",".join(g[1]) + "}" for g in critical_groups_sorted])
+        critical_groups_top3_supply = ", ".join([f"{g[0]:,.0f}".replace(",", " ") for g in critical_groups_sorted])
 
         results.append(
             dict(
@@ -219,6 +232,9 @@ def compute_wbi_indices(
                 in_neighbors_used=int(m),
                 in_neighbors=in_neighbors,  
                 critical_groups_count=int(critical_groups_count),
+                critical_groups_top3=str(critical_groups_top3),
+                critical_groups_top3_supply=str(critical_groups_top3_supply),
+
             )
         )
 
@@ -256,7 +272,7 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
     # общий стиль трейсиков
     fig.update_traces(
         marker=dict(line=dict(width=0)),
-        textposition="outside",
+        textposition="inside",
         textfont=dict(color="white"),
     )
     return fig
@@ -443,7 +459,7 @@ st.plotly_chart(fig_supply, use_container_width=True)
 
 
 #  РАСЧЁТ ИНДЕКСОВ
-st.subheader("Weighted Bundle Index 1 (wBI1)")
+st.subheader("Weighted Bundle Indices (wBI1, wBI2)")
 st.caption(
     "Вершины: регионы. Вес ребра: поставки (тонн) из region_from в region_to. "
     "Критическая группа S для региона i: сумма входящих поставок от S >= q."
@@ -473,9 +489,38 @@ indices_df_view = indices_df.rename(columns=COLUMN_RENAME)
 st.dataframe(indices_df_view, use_container_width=True)
 
 
+st.subheader("Топ-3 критические группы для региона")
+
+top3_table = (
+    indices_df[["region", "critical_groups_top3", "critical_groups_top3_supply"]]
+    .rename(columns={
+        "region": "Регион",
+        "critical_groups_top3": "Топ-3 критические группы",
+        "critical_groups_top3_supply": "Суммарные поставки",
+    })
+)
+
+st.dataframe(
+    top3_table,
+    use_container_width=True,
+    column_config={
+        "Топ-3 критические группы": st.column_config.TextColumn(
+            width="large"
+        ),
+        "Суммарные поставки": st.column_config.TextColumn(
+            width="small"
+        ),
+    }
+)
+
+
 
 top_show = min(int(top_show), len(indices_df))
 plot_df = indices_df.head(top_show).sort_values("wBI1", ascending=True)
+
+
+common_height = 420 + 26 * top_show
+
 
 fig_wbi = px.bar(
     plot_df,
@@ -487,23 +532,22 @@ fig_wbi = px.bar(
 
 fig_wbi.update_traces(
     marker_color="#74b9ff",
-    texttemplate="%{text:.3f}",
+    texttemplate="%{text:.2f}",
     hovertemplate="<b>%{y}</b><br>wBI1=%{x:.3f}<extra></extra>",
 )
 
 fig_wbi = apply_dark_style(
     fig_wbi,
-    height=420 + 26 * len(plot_df),
+    height=common_height, # before 420 + 26 * len(plot_df)
     title=f"Топ-{top_show} регионов по wBI1 (q={quota_q}, topN={top_in_neighbors})",
     x_title="wBI1",
     y_title="Регион",
 )
 
-st.plotly_chart(fig_wbi, use_container_width=True)
+# st.plotly_chart(fig_wbi, use_container_width=True)
 
 
-# ГРАФИК wBI2
-st.subheader("Weighted Bundle Index 2 (wBI2)")
+
 
 plot_df_wbi2 = (
     indices_df
@@ -522,17 +566,24 @@ fig_wbi2 = px.bar(
 
 fig_wbi2.update_traces(
     marker_color="#74b9ff",
-    texttemplate="%{text:.4f}",
+    texttemplate="%{text:.2f}",
     hovertemplate="<b>%{y}</b><br>wBI2=%{x:.4f}<extra></extra>",
 )
 
 fig_wbi2 = apply_dark_style(
     fig_wbi2,
-    height=420 + 26 * len(plot_df_wbi2),
+    height=common_height,
     title=f"Топ-{top_show} регионов по wBI2 (q={quota_q}, topN={top_in_neighbors})",
     x_title="wBI2",
     y_title="Регион",
 )
 
-st.plotly_chart(fig_wbi2, use_container_width=True)
 
+# st.plotly_chart(fig_wbi2, use_container_width=True)
+col_left, col_right = st.columns(2, gap="small")
+
+with col_left:
+    st.plotly_chart(fig_wbi, use_container_width=True)
+
+with col_right:
+    st.plotly_chart(fig_wbi2, use_container_width=True)
