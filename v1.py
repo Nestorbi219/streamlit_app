@@ -274,6 +274,7 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
         marker=dict(line=dict(width=0)),
         textposition="inside",
         textfont=dict(color="white"),
+        texttemplate="%{x:,.2f}",   
     )
     return fig
 
