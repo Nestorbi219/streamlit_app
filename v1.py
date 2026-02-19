@@ -591,8 +591,8 @@ with col_left:
 with col_right:
     st.plotly_chart(fig_wbi2, use_container_width=True)
 # =========================
-# Идея: для длины d строим "скрытые" ребра w^(d)_{j->i} как
-#   w^(d)_{j->i} = max_{paths j -> ... -> i, length=d}  min(weights along path)
+# для длины d строим "скрытые" ребра w^(d)_{j->i} как
+# w^(d)_{j->i} = max_{paths j -> ... -> i, length=d}  min(weights along path)
 # После этого считаем wBI1 / wBI2
 # =========================
 
@@ -610,10 +610,9 @@ def _indirect_edges_maxmin(
     base = edges[["region_from", "region_to", "w"]].copy()
     base = base[base["w"] > 0].copy()
 
-    # paths_l: [src, mid, bw] where bw = best bottleneck along a path of length l from src to mid
     paths = base.rename(columns={"region_from": "src", "region_to": "mid", "w": "bw"})
 
-    # итеративно наращиваем длину пути: max-min "умножение" матриц
+    # наращиваем длину пути
     for step in range(2, d + 1):
         nxt = paths.merge(
             base.rename(columns={"region_from": "mid", "region_to": "dst", "w": "w2"}),
@@ -636,20 +635,18 @@ def _indirect_edges_maxmin(
             .rename(columns={"bw": "bw"})
         )
 
-        # pruning: для каждого src оставим топ-N dst по bw
+        # pruning
         nxt = nxt.sort_values(["src", "bw"], ascending=[True, False])
         if prune_top_per_source and prune_top_per_source > 0:
             nxt = nxt.groupby("src", as_index=False).head(int(prune_top_per_source))
 
         if len(nxt) > hard_cap_rows:
-            # мягко режем, чтобы Streamlit не умер
             nxt = nxt.nlargest(int(hard_cap_rows), "bw")
 
-        # готовим для следующей итерации
+
         if step < d:
             paths = nxt.rename(columns={"dst": "mid"})
         else:
-            # финальный шаг — это и есть ребра длины d
             paths = nxt.rename(columns={"dst": "region_to", "bw": "w"})
             paths = paths.rename(columns={"src": "region_from"})
 
@@ -703,7 +700,7 @@ def compute_wbi_indices_indirect(
     )
 
 
-# ---------- UI-блок: Непрямое влияние ----------
+# Непрямое влияние
 st.divider()
 st.header("Непрямое влияние (Indirect influence)")
 
@@ -763,3 +760,58 @@ if use_indirect:
             "wBI2_indirect": "wBI₂ (непрямое)",
         })
         st.dataframe(cmp_view, use_container_width=True)
+
+        col_l, col_r = st.columns(2, gap="small")
+
+        with col_l:
+            # График для wBI1 (непрямое влияние)
+            st.subheader("wBI₁ на графе непрямого влияния")
+            fig_wbi_indirect = px.bar(
+                cmp.sort_values("wBI1_indirect", ascending=True),
+                x="wBI1_indirect",
+                y="region",
+                orientation="h",
+                text="wBI1_indirect",
+            )
+
+            fig_wbi_indirect.update_traces(
+                marker_color="#74b9ff",  # “неоново-голубой”
+                texttemplate="%{text:.2f}",
+                hovertemplate="<b>%{y}</b><br>wBI₁ (непрямое)=%{x:.3f}<extra></extra>",
+            )
+
+            fig_wbi_indirect = apply_dark_style(
+                fig_wbi_indirect,
+                height=420 + 26 * len(cmp_view),
+                title=f"Топ-{top_show} регионов по wBI₁ (непрямое влияние)",
+                x_title="wBI₁ (непрямое влияние)",
+                y_title="Регион",
+            )
+
+            st.plotly_chart(fig_wbi_indirect, use_container_width=True)
+        with col_r:
+            # График для wBI2 (непрямое влияние)
+            st.subheader("wBI₂ на графе непрямого влияния")
+            fig_wbi2_indirect = px.bar(
+                cmp.sort_values("wBI2_indirect", ascending=True),
+                x="wBI2_indirect",
+                y="region",
+                orientation="h",
+                text="wBI2_indirect",
+            )
+
+            fig_wbi2_indirect.update_traces(
+                marker_color="#74b9ff",
+                texttemplate="%{text:.4f}",
+                hovertemplate="<b>%{y}</b><br>wBI₂ (непрямое)=%{x:.4f}<extra></extra>",
+            )
+
+            fig_wbi2_indirect = apply_dark_style(
+                fig_wbi2_indirect,
+                height=420 + 26 * len(cmp_view),
+                title=f"Топ-{top_show} регионов по wBI₂ (непрямое влияние)",
+                x_title="wBI₂ (непрямое влияние)",
+                y_title="Регион",
+            )
+
+            st.plotly_chart(fig_wbi2_indirect, use_container_width=True)
