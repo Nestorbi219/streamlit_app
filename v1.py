@@ -761,13 +761,17 @@ if use_indirect:
         })
         st.dataframe(cmp_view, use_container_width=True)
 
+        # Убираем строки с нулевыми значениями для wBI₁ и wBI₂
+        df_wbi_indirect = cmp[cmp["wBI1_indirect"] > 0]  # Для wBI₁
+        df_wbi2_indirect = cmp[cmp["wBI2_indirect"] > 0]  # Для wBI₂
+
         col_l, col_r = st.columns(2, gap="small")
 
         with col_l:
             # График для wBI1 (непрямое влияние)
             st.subheader("wBI₁ на графе непрямого влияния")
             fig_wbi_indirect = px.bar(
-                cmp.sort_values("wBI1_indirect", ascending=True),
+                df_wbi_indirect.sort_values("wBI1_indirect", ascending=False),
                 x="wBI1_indirect",
                 y="region",
                 orientation="h",
@@ -793,7 +797,7 @@ if use_indirect:
             # График для wBI2 (непрямое влияние)
             st.subheader("wBI₂ на графе непрямого влияния")
             fig_wbi2_indirect = px.bar(
-                cmp.sort_values("wBI2_indirect", ascending=True),
+                df_wbi2_indirect.sort_values("wBI2_indirect", ascending=False),
                 x="wBI2_indirect",
                 y="region",
                 orientation="h",
