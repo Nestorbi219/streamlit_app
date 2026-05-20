@@ -4,14 +4,17 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+# =========================
 # Страница
+# =========================
 st.set_page_config(
     page_title="Анализ межрегиональной торговли",
     layout="wide",
 )
 
-
+# =========================
 # Список регионов-исключений
+# =========================
 EXCLUDE = {
     "российская федерация",
     "центральный федеральный округ",
@@ -29,7 +32,9 @@ EXCLUDE = {
     "тюменская область (кроме ханты-мансийского автономного округа - югры и ямало-ненецкого автономного округа)",
 }
 
+# =========================
 # Датасет
+# =========================
 def load_data(file_path) -> pd.DataFrame:
     # читаем без заголовков: после первых 3 строк идут 2 строки "шапки"
     raw = pd.read_excel(file_path, header=None, skiprows=3)
@@ -142,7 +147,9 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
     return df_long
 
 
-#  Расчет индексов 
+# =========================
+#  Расчет индексов
+# =========================
 def compute_wbi_indices(
     df_long: pd.DataFrame,
     quota_q: float,
@@ -155,17 +162,16 @@ def compute_wbi_indices(
     Вес ребра w_{ji} = поставки (тонн) из region_from=j в region_to=i.
 
     Критическая группа S для i: сумма входящих поставок от S >= q.
-    Без ограничения на размер группы
     """
+
     edges = (
         df_long.groupby(["region_from", "region_to"], as_index=False)["value"]
         .sum()
         .rename(columns={"value": "w"})
-    ) # Агрегация нужна что бы не считать одно ребро два раза
+    )
 
-    total_weight_network = float(edges["w"].sum()) # Общий вес сети. Знаменатель wBI_2
+    total_weight_network = float(edges["w"].sum())
     if total_weight_network <= 0:
-        # return pd.DataFrame(columns=["region", "wBI1", "wBI2", "in_weight", "in_neighbors_used", "critical_groups_count"])
         return pd.DataFrame(columns=[
             "region", "wBI1", "wBI2", "in_weight", "in_neighbors_used",
             "critical_groups_count", "critical_groups_top3", "critical_groups_top3_supply"
@@ -173,7 +179,7 @@ def compute_wbi_indices(
 
     regions = sorted(set(edges["region_from"]).union(set(edges["region_to"])))
 
-    results = []  # Знаменатель wBI_1
+    results = []
     for region_i in regions:
         inc = edges[edges["region_to"] == region_i].copy()
         inc = inc[inc["w"] > 0]
@@ -192,32 +198,30 @@ def compute_wbi_indices(
             )
             continue
 
-        inc = inc.sort_values("w", ascending=False).head(int(top_in_neighbors)) # Ограничение сложности расчета для ускорения по топ поставщикам
+        # оставляем topN входящих поставщиков (это НЕ pruning непрямых ребер, это ограничение сложности комбинаторики)
+        inc = inc.sort_values("w", ascending=False).head(int(top_in_neighbors))
 
-        # список входящих поставщиков (region_from)
         in_neighbors = tuple(inc["region_from"].astype(str).tolist())
-
         weights = inc["w"].astype(float).tolist()
         m = len(weights)
 
         wbi1_i = 0.0
         wbi2_i = 0.0
         critical_groups_count = 0
-        critical_groups = []  # тут будем хранить сами критические группы: (sum_supply, tuple(names))
+        critical_groups = []
 
-        for r in range(1, m + 1): # Расчет потенциальных критических групп
+        for r in range(1, m + 1):
             for idxs in itertools.combinations(range(m), r):
                 s = 0.0
-                for t in idxs: # 
+                for t in idxs:
                     s += weights[t]
-                if s >= quota_q: # Если вес S >= q - группа критическая
+                if s >= quota_q:
                     critical_groups_count += 1
                     wbi1_i += s / in_weight
                     wbi2_i += s / total_weight_network
                     names = tuple(in_neighbors[t] for t in idxs)
                     critical_groups.append((float(s), names))
 
-        # Топ-3 критические группы по максимальному суммарному весу s
         critical_groups_sorted = sorted(critical_groups, key=lambda x: x[0], reverse=True)[:3]
 
         critical_groups_top3 = ",".join(["{" + ",".join(g[1]) + "}" for g in critical_groups_sorted])
@@ -230,20 +234,20 @@ def compute_wbi_indices(
                 wBI2=float(wbi2_i),
                 in_weight=float(in_weight),
                 in_neighbors_used=int(m),
-                in_neighbors=in_neighbors,  
+                in_neighbors=in_neighbors,
                 critical_groups_count=int(critical_groups_count),
                 critical_groups_top3=str(critical_groups_top3),
                 critical_groups_top3_supply=str(critical_groups_top3_supply),
-
             )
         )
 
     return pd.DataFrame(results).sort_values("wBI1", ascending=False)
 
 
-# Cтиль  чартов 
+# =========================
+# Cтиль чартов
+# =========================
 def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
-    # максимально совместимый стиль (не использует спорные поля типа titlefont)
     fig.update_layout(
         template="plotly_dark",
         title={"text": title, "x": 0.0, "xanchor": "left"},
@@ -252,7 +256,6 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
         plot_bgcolor="#0b0f18",
         margin=dict(l=60, r=40, t=70, b=50),
         font=dict(color="white", size=14),
-
         xaxis=dict(
             title=x_title,
             showgrid=True,
@@ -269,7 +272,6 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
         legend=dict(font=dict(color="white")),
     )
 
-    # общий стиль трейсиков
     fig.update_traces(
         marker=dict(line=dict(width=0)),
         textposition="inside",
@@ -279,8 +281,9 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
     return fig
 
 
-
+# =========================
 # Интерфейс
+# =========================
 st.title("Анализ межрегиональной торговли основными пищевыми продуктами и зерном")
 
 with st.sidebar:
@@ -320,13 +323,11 @@ with st.sidebar:
         key="top_show",
     )
 
-
 if not uploaded_files:
     st.info("Загрузи один или несколько Excel-файлов.")
     st.stop()
 
 # UNION. Читаем все файлы и склеиваем строки
-
 dfs = [load_data(f) for f in uploaded_files]
 df = pd.concat(dfs, ignore_index=True)
 df = remove_aggregates(df)
@@ -344,13 +345,9 @@ rows_to_show = st.slider(
 )
 st.dataframe(df.head(rows_to_show), use_container_width=True)
 
-
 # Выбор регионов-источников (region_from)
-
 region_col = df.columns[0]
-region_values = sorted(
-    df[region_col].dropna().astype(str).str.strip().unique().tolist()
-)
+region_values = sorted(df[region_col].dropna().astype(str).str.strip().unique().tolist())
 
 ALL_OPTION = "Все регионы"
 options = [ALL_OPTION] + region_values
@@ -371,12 +368,9 @@ if not selected_regions:
     st.warning("Выбери хотя бы один регион.")
     st.stop()
 
-
 df_long = build_long(df)
 
-
 # Фильтр по типу товара
-
 products = sorted(df_long["product"].dropna().unique().tolist())
 product_selected = st.selectbox(
     "Тип товара",
@@ -391,16 +385,15 @@ else:
     df_long_f = df_long.copy()
 
 # фильтр по выбранным регионам-источникам
-df_long_f = df_long_f[
-    df_long_f["region_from"].isin([str(x).strip() for x in selected_regions_effective])
-]
+df_long_f = df_long_f[df_long_f["region_from"].isin([str(x).strip() for x in selected_regions_effective])]
 
 if df_long_f.empty:
     st.info("После фильтрации по регионам/товару не осталось данных.")
     st.stop()
 
-
-#  СНАЧАЛА ГРАФИК СУММАРНЫХ ПОСТАВОК
+# =========================
+# Суммарные поставки
+# =========================
 st.subheader("Суммарные поставки → регионы-партнёры")
 
 partners = (
@@ -443,7 +436,7 @@ fig_supply = px.bar(
 )
 
 fig_supply.update_traces(
-    marker_color="#74b9ff",  # “неоново-голубой”
+    marker_color="#74b9ff",
     texttemplate="%{text:,.0f}".replace(",", " "),
     hovertemplate="<b>%{y}</b><br>%{x:,.0f}".replace(",", " ") + " тонн<extra></extra>",
 )
@@ -458,8 +451,9 @@ fig_supply = apply_dark_style(
 
 st.plotly_chart(fig_supply, use_container_width=True)
 
-
-#  РАСЧЁТ ИНДЕКСОВ
+# =========================
+# Прямые индексы
+# =========================
 st.subheader("Weighted Bundle Indices (wBI1, wBI2)")
 st.caption(
     "Вершины: регионы. Вес ребра: поставки (тонн) из region_from в region_to. "
@@ -491,9 +485,7 @@ COLUMN_RENAME = {
 indices_df_view = indices_df.rename(columns=COLUMN_RENAME)
 st.dataframe(indices_df_view, use_container_width=True)
 
-
 st.subheader("Топ-3 критические группы для региона")
-
 top3_table = (
     indices_df[["region", "critical_groups_top3", "critical_groups_top3_supply"]]
     .rename(columns={
@@ -507,23 +499,14 @@ st.dataframe(
     top3_table,
     use_container_width=True,
     column_config={
-        "Топ-3 критические группы": st.column_config.TextColumn(
-            width="large"
-        ),
-        "Суммарные поставки": st.column_config.TextColumn(
-            width="small"
-        ),
+        "Топ-3 критические группы": st.column_config.TextColumn(width="large"),
+        "Суммарные поставки": st.column_config.TextColumn(width="small"),
     }
 )
 
-
-
 top_show = min(int(top_show), len(indices_df))
 plot_df = indices_df.head(top_show).sort_values("wBI1", ascending=True)
-
-
 common_height = 420 + 26 * top_show
-
 
 fig_wbi = px.bar(
     plot_df,
@@ -532,25 +515,18 @@ fig_wbi = px.bar(
     orientation="h",
     text="wBI1",
 )
-
 fig_wbi.update_traces(
     marker_color="#74b9ff",
     texttemplate="%{text:.2f}",
     hovertemplate="<b>%{y}</b><br>wBI1=%{x:.3f}<extra></extra>",
 )
-
 fig_wbi = apply_dark_style(
     fig_wbi,
-    height=common_height, # before 420 + 26 * len(plot_df)
+    height=common_height,
     title=f"Топ-{top_show} регионов по wBI1 (q={quota_q}, topN={top_in_neighbors})",
     x_title="wBI1",
     y_title="Регион",
 )
-
-# st.plotly_chart(fig_wbi, use_container_width=True)
-
-
-
 
 plot_df_wbi2 = (
     indices_df
@@ -566,13 +542,11 @@ fig_wbi2 = px.bar(
     orientation="h",
     text="wBI2",
 )
-
 fig_wbi2.update_traces(
     marker_color="#74b9ff",
     texttemplate="%{text:.2f}",
     hovertemplate="<b>%{y}</b><br>wBI2=%{x:.4f}<extra></extra>",
 )
-
 fig_wbi2 = apply_dark_style(
     fig_wbi2,
     height=common_height,
@@ -581,28 +555,23 @@ fig_wbi2 = apply_dark_style(
     y_title="Регион",
 )
 
-
-# st.plotly_chart(fig_wbi2, use_container_width=True)
 col_left, col_right = st.columns(2, gap="small")
-
 with col_left:
     st.plotly_chart(fig_wbi, use_container_width=True)
-
 with col_right:
     st.plotly_chart(fig_wbi2, use_container_width=True)
-# =========================
-# для длины d строим "скрытые" ребра w^(d)_{j->i} как
-# w^(d)_{j->i} = max_{paths j -> ... -> i, length=d}  min(weights along path)
-# После этого считаем wBI1 / wBI2
-# =========================
 
-def _indirect_edges_maxmin(
-    edges: pd.DataFrame,
-    d: int = 2,
-    prune_top_per_source: int = 500,
-    hard_cap_rows: int = 2_000_000,
-) -> pd.DataFrame:
+# =========================
+# Непрямое влияние (БЕЗ PRUNING)
+# =========================
+def _indirect_edges_maxmin_no_pruning(edges: pd.DataFrame, d: int = 2) -> pd.DataFrame:
+    """
+    Строим "скрытые" ребра длины d:
+        w^(d)_{j->i} = max_{paths j -> ... -> i, length=d} min(weights along path)
 
+    ВАЖНО: здесь НЕТ pruning (никаких head/top per source, никаких hard_cap).
+    На плотных графах количество непрямых ребер может взорваться по памяти/времени.
+    """
 
     if d < 2:
         raise ValueError("d must be >= 2 for indirect influence")
@@ -610,39 +579,30 @@ def _indirect_edges_maxmin(
     base = edges[["region_from", "region_to", "w"]].copy()
     base = base[base["w"] > 0].copy()
 
+    # paths: (src -> mid) с bottleneck bw
     paths = base.rename(columns={"region_from": "src", "region_to": "mid", "w": "bw"})
 
-    # наращиваем длину пути
     for step in range(2, d + 1):
         nxt = paths.merge(
             base.rename(columns={"region_from": "mid", "region_to": "dst", "w": "w2"}),
             on="mid",
             how="inner",
         )
-        # убираем петли (src == dst)
+
+        # убираем петли src == dst
         nxt = nxt[nxt["src"] != nxt["dst"]]
-
-
         if nxt.empty:
             return pd.DataFrame(columns=["region_from", "region_to", "w"])
 
+        # bottleneck на пути
         nxt["bw"] = nxt[["bw", "w2"]].min(axis=1)
 
-        # агрегируем: из src в dst берем лучший bottleneck (max)
+        # из src в dst берем лучший bottleneck (max)
         nxt = (
             nxt.groupby(["src", "dst"], as_index=False)["bw"]
             .max()
             .rename(columns={"bw": "bw"})
         )
-
-        # pruning
-        nxt = nxt.sort_values(["src", "bw"], ascending=[True, False])
-        if prune_top_per_source and prune_top_per_source > 0:
-            nxt = nxt.groupby("src", as_index=False).head(int(prune_top_per_source))
-
-        if len(nxt) > hard_cap_rows:
-            nxt = nxt.nlargest(int(hard_cap_rows), "bw")
-
 
         if step < d:
             paths = nxt.rename(columns={"dst": "mid"})
@@ -653,18 +613,18 @@ def _indirect_edges_maxmin(
     return paths[["region_from", "region_to", "w"]]
 
 
-def compute_wbi_indices_indirect(
+def compute_wbi_indices_indirect_no_pruning(
     df_long: pd.DataFrame,
     quota_q: float,
     d: int = 2,
     top_in_neighbors: int = 15,
-    prune_top_per_source: int = 500,
 ) -> pd.DataFrame:
-    """wBI1/wBI2 на графе непрямого влияния длины d.
+    """
+    wBI1/wBI2 на графе непрямого влияния длины d (БЕЗ pruning).
 
-    Мы:
-      1) строим прямые ребра (агрегация как в compute_wbi_indices),
-      2) преобразуем их в ребра непрямого влияния длины d по max-min,
+    Шаги:
+      1) строим прямые ребра (агрегация),
+      2) преобразуем их в ребра непрямого влияния длины d по max-min (без pruning),
       3) пересчитываем wBI1/wBI2 обычной функцией compute_wbi_indices.
     """
     edges = (
@@ -680,11 +640,7 @@ def compute_wbi_indices_indirect(
             "critical_groups_count", "critical_groups_top3", "critical_groups_top3_supply"
         ])
 
-    edges_ind = _indirect_edges_maxmin(
-        edges=edges,
-        d=int(d),
-        prune_top_per_source=int(prune_top_per_source),
-    )
+    edges_ind = _indirect_edges_maxmin_no_pruning(edges=edges, d=int(d))
 
     if edges_ind.empty:
         return pd.DataFrame(columns=[
@@ -693,6 +649,7 @@ def compute_wbi_indices_indirect(
         ])
 
     df_long_ind = edges_ind.rename(columns={"w": "value"})
+
     return compute_wbi_indices(
         df_long=df_long_ind,
         quota_q=float(quota_q),
@@ -700,7 +657,7 @@ def compute_wbi_indices_indirect(
     )
 
 
-# Непрямое влияние
+# UI для непрямого влияния
 st.divider()
 st.header("Непрямое влияние (Indirect influence)")
 
@@ -709,30 +666,23 @@ use_indirect = st.checkbox(
     value=False,
     help=(
         "Строим ребра длины d по правилу: вес j→i = max по всем путям длины d от j к i "
-        "(минимум ребер на пути). Затем пересчитываем wBI₁/wBI₂ уже на новом графе."
+        "(минимум ребер на пути). Затем пересчитываем wBI₁/wBI₂ уже на новом графе. "
+        "В этой версии pruning отключен."
     ),
 )
 
 if use_indirect:
-    col_a, col_b, col_c = st.columns([1, 1, 2])
+    col_a, col_b = st.columns([1, 3])
     with col_a:
         d_indirect = st.number_input("Длина пути", min_value=2, max_value=5, value=2, step=1)
     with col_b:
-        prune_top = st.number_input(
-            "Прунинг",
-            min_value=50,
-            max_value=3000,
-            value=500,
-            step=50,
-            help="Ограничивает рост числа непрямых ребер на плотных графах",
-        )
+        pass
 
-    indices_ind_df = compute_wbi_indices_indirect(
+    indices_ind_df = compute_wbi_indices_indirect_no_pruning(
         df_long=df_long_f,
         quota_q=float(quota_q),
         d=int(d_indirect),
         top_in_neighbors=int(top_in_neighbors),
-        prune_top_per_source=int(prune_top),
     )
 
     if indices_ind_df.empty:
@@ -745,7 +695,12 @@ if use_indirect:
         st.subheader("Сравнение: прямое vs непрямое")
         cmp = (
             indices_df[["region", "wBI1", "wBI2"]]
-            .merge(indices_ind_df[["region", "wBI1", "wBI2"]], on="region", how="outer", suffixes=("_direct", "_indirect"))
+            .merge(
+                indices_ind_df[["region", "wBI1", "wBI2"]],
+                on="region",
+                how="outer",
+                suffixes=("_direct", "_indirect"),
+            )
             .fillna(0.0)
         )
         cmp["Δ wBI₁"] = cmp["wBI1_indirect"] - cmp["wBI1_direct"]
@@ -761,14 +716,13 @@ if use_indirect:
         })
         st.dataframe(cmp_view, use_container_width=True)
 
-        # Убираем строки с нулевыми значениями для wBI₁ и wBI₂
-        df_wbi_indirect = cmp[cmp["wBI1_indirect"] > 0]  # Для wBI₁
-        df_wbi2_indirect = cmp[cmp["wBI2_indirect"] > 0]  # Для wBI₂
+        # убираем нули для графиков
+        df_wbi_indirect = cmp[cmp["wBI1_indirect"] > 0]
+        df_wbi2_indirect = cmp[cmp["wBI2_indirect"] > 0]
 
         col_l, col_r = st.columns(2, gap="small")
 
         with col_l:
-            # График для wBI1 (непрямое влияние)
             st.subheader("wBI₁ на графе непрямого влияния")
             fig_wbi_indirect = px.bar(
                 df_wbi_indirect.sort_values("wBI1_indirect", ascending=False),
@@ -777,24 +731,21 @@ if use_indirect:
                 orientation="h",
                 text="wBI1_indirect",
             )
-
             fig_wbi_indirect.update_traces(
-                marker_color="#74b9ff",  # “неоново-голубой”
+                marker_color="#74b9ff",
                 texttemplate="%{text:.2f}",
                 hovertemplate="<b>%{y}</b><br>wBI₁ (непрямое)=%{x:.3f}<extra></extra>",
             )
-
             fig_wbi_indirect = apply_dark_style(
                 fig_wbi_indirect,
-                height=420 + 26 * len(cmp_view),
-                title=f"Топ-{top_show} регионов по wBI₁ (непрямое влияние)",
+                height=420 + 26 * len(df_wbi_indirect),
+                title=f"Топ-{min(top_show, len(df_wbi_indirect))} регионов по wBI₁ (непрямое влияние)",
                 x_title="wBI₁ (непрямое влияние)",
                 y_title="Регион",
             )
-
             st.plotly_chart(fig_wbi_indirect, use_container_width=True)
+
         with col_r:
-            # График для wBI2 (непрямое влияние)
             st.subheader("wBI₂ на графе непрямого влияния")
             fig_wbi2_indirect = px.bar(
                 df_wbi2_indirect.sort_values("wBI2_indirect", ascending=False),
@@ -803,19 +754,16 @@ if use_indirect:
                 orientation="h",
                 text="wBI2_indirect",
             )
-
             fig_wbi2_indirect.update_traces(
                 marker_color="#74b9ff",
                 texttemplate="%{text:.4f}",
                 hovertemplate="<b>%{y}</b><br>wBI₂ (непрямое)=%{x:.4f}<extra></extra>",
             )
-
             fig_wbi2_indirect = apply_dark_style(
                 fig_wbi2_indirect,
-                height=420 + 26 * len(cmp_view),
-                title=f"Топ-{top_show} регионов по wBI₂ (непрямое влияние)",
+                height=420 + 26 * len(df_wbi2_indirect),
+                title=f"Топ-{min(top_show, len(df_wbi2_indirect))} регионов по wBI₂ (непрямое влияние)",
                 x_title="wBI₂ (непрямое влияние)",
                 y_title="Регион",
             )
-
             st.plotly_chart(fig_wbi2_indirect, use_container_width=True)
