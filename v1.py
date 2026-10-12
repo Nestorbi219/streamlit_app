@@ -1,4 +1,5 @@
 import itertools
+from io import BytesIO
 
 import pandas as pd
 import plotly.express as px
@@ -8,8 +9,64 @@ import streamlit as st
 # Страница
 # =========================
 st.set_page_config(
-    page_title="Анализ межрегиональной торговли",
+    page_title="TradeFlow — анализ межрегиональной торговли",
+    page_icon="📊",
     layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+        .stApp { background: #07111f; }
+        [data-testid="stSidebar"] { background: #0b1728; }
+        [data-testid="stMetric"] {
+            background: linear-gradient(145deg, #102239 0%, #0b192b 100%);
+            border: 1px solid rgba(122, 162, 247, 0.18);
+            border-radius: 14px;
+            padding: 16px 18px;
+        }
+        .tradeflow-hero {
+            background:
+                radial-gradient(circle at 90% 15%, rgba(56, 189, 248, .20), transparent 30%),
+                linear-gradient(135deg, #112b46 0%, #0b182a 65%, #0d2035 100%);
+            border: 1px solid rgba(125, 211, 252, .20);
+            border-radius: 20px;
+            padding: 30px 34px;
+            margin-bottom: 22px;
+        }
+        .tradeflow-kicker {
+            color: #7dd3fc;
+            font-size: .78rem;
+            font-weight: 700;
+            letter-spacing: .14em;
+            text-transform: uppercase;
+        }
+        .tradeflow-hero h1 {
+            color: #f8fafc;
+            font-size: clamp(2rem, 4vw, 3.25rem);
+            line-height: 1.05;
+            margin: 8px 0 12px;
+        }
+        .tradeflow-hero p {
+            color: #cbd5e1;
+            font-size: 1.05rem;
+            max-width: 820px;
+            margin: 0;
+        }
+        .tradeflow-note {
+            border-left: 3px solid #38bdf8;
+            color: #cbd5e1;
+            padding: 4px 0 4px 14px;
+            margin: 8px 0 18px;
+        }
+        div[data-testid="stDownloadButton"] button,
+        div[data-testid="stFormSubmitButton"] button {
+            border-radius: 10px;
+            font-weight: 650;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 # =========================
@@ -35,9 +92,16 @@ EXCLUDE = {
 # =========================
 # Датасет
 # =========================
-def load_data(file_path) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_data(file_bytes: bytes) -> pd.DataFrame:
     # читаем без заголовков: после первых 3 строк идут 2 строки "шапки"
-    raw = pd.read_excel(file_path, header=None, skiprows=3)
+    raw = pd.read_excel(BytesIO(file_bytes), header=None, skiprows=3)
+
+    if raw.shape[0] < 3 or raw.shape[1] < 2:
+        raise ValueError(
+            "Файл не соответствует ожидаемой структуре: после первых трёх строк "
+            "нужны две строки заголовка и хотя бы одна строка данных."
+        )
 
     # 0-я строка: тип товара (merged -> будут NaN)
     header_product = raw.iloc[0].copy().ffill()
@@ -85,8 +149,46 @@ def load_data(file_path) -> pd.DataFrame:
 
     df = df[cols_keep].copy()
     df["region_from"] = df["region_from"].astype(str).str.strip()
+    df = df[~df["region_from"].str.lower().isin({"", "nan", "none"})]
 
     return df
+
+
+@st.cache_data(show_spinner=False)
+def build_demo_data() -> pd.DataFrame:
+    """Создаёт небольшой синтетический набор данных для знакомства с интерфейсом."""
+    regions = [
+        "Республика Адыгея",
+        "Краснодарский край",
+        "Ростовская область",
+        "Ставропольский край",
+        "Волгоградская область",
+        "Воронежская область",
+        "Астраханская область",
+        "Республика Дагестан",
+    ]
+    products = ["Зерно", "Овощи"]
+    data: dict[str, list[object]] = {"region_from": regions}
+
+    for product_index, product in enumerate(products):
+        for destination_index, destination in enumerate(regions):
+            values = []
+            for source_index, _source in enumerate(regions):
+                if source_index == destination_index:
+                    values.append(0)
+                    continue
+                amount = (
+                    ((source_index + 3) * (destination_index + 5) * 173)
+                    + (product_index + 1) * 620
+                ) % 5400 + 250
+                values.append(float(amount))
+            data[f"{product} | {destination}"] = values
+
+    return pd.DataFrame(data)
+
+
+def format_tonnes(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
 
 
 def remove_aggregates(df: pd.DataFrame) -> pd.DataFrame:
@@ -150,6 +252,23 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 #  Расчет индексов
 # =========================
+INDEX_COLUMNS = [
+    "region",
+    "wBI1",
+    "wBI2",
+    "in_weight",
+    "in_neighbors_used",
+    "in_neighbors",
+    "critical_groups_count",
+    "critical_groups_top3",
+    "critical_groups_top3_supply",
+]
+
+
+def empty_indices_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=INDEX_COLUMNS)
+
+
 def compute_wbi_indices(
     df_long: pd.DataFrame,
     quota_q: float,
@@ -172,10 +291,7 @@ def compute_wbi_indices(
 
     total_weight_network = float(edges["w"].sum())
     if total_weight_network <= 0:
-        return pd.DataFrame(columns=[
-            "region", "wBI1", "wBI2", "in_weight", "in_neighbors_used",
-            "critical_groups_count", "critical_groups_top3", "critical_groups_top3_supply"
-        ])
+        return empty_indices_frame()
 
     regions = sorted(set(edges["region_from"]).union(set(edges["region_to"])))
 
@@ -193,7 +309,10 @@ def compute_wbi_indices(
                     wBI2=0.0,
                     in_weight=in_weight,
                     in_neighbors_used=0,
+                    in_neighbors=(),
                     critical_groups_count=0,
+                    critical_groups_top3="",
+                    critical_groups_top3_supply="",
                 )
             )
             continue
@@ -224,7 +343,9 @@ def compute_wbi_indices(
 
         critical_groups_sorted = sorted(critical_groups, key=lambda x: x[0], reverse=True)[:3]
 
-        critical_groups_top3 = ",".join(["{" + ",".join(g[1]) + "}" for g in critical_groups_sorted])
+        critical_groups_top3 = ", ".join(
+            ["{" + ", ".join(g[1]) + "}" for g in critical_groups_sorted]
+        )
         critical_groups_top3_supply = ", ".join([f"{g[0]:,.0f}".replace(",", " ") for g in critical_groups_sorted])
 
         results.append(
@@ -284,17 +405,40 @@ def apply_dark_style(fig, height: int, title: str, x_title: str, y_title: str):
 # =========================
 # Интерфейс
 # =========================
-st.title("Анализ межрегиональной торговли основными пищевыми продуктами и зерном")
+st.markdown(
+    """
+    <section class="tradeflow-hero">
+        <div class="tradeflow-kicker">TradeFlow Analytics</div>
+        <h1>Межрегиональная торговля — в цифрах и связях</h1>
+        <p>
+            Исследуйте товарные потоки между регионами, находите критические группы
+            поставщиков и сравнивайте прямое и непрямое влияние в торговой сети.
+        </p>
+    </section>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
-    st.header("Загрузка")
+    st.markdown("## 📊 TradeFlow")
+    st.caption("Аналитика межрегиональных товарных потоков")
+    st.divider()
+
+    st.subheader("1. Данные")
     uploaded_files = st.file_uploader(
-        "Выберите файлы Excel",
+        "Excel-файлы Росстата",
         type=["xlsx"],
         accept_multiple_files=True,
+        help="Можно выбрать несколько файлов с одинаковой структурой — строки будут объединены.",
+    )
+    use_demo = st.checkbox(
+        "Использовать демо-данные",
+        value=True,
+        disabled=bool(uploaded_files),
+        help="Синтетический набор позволяет посмотреть интерфейс без загрузки файлов.",
     )
 
-    st.header("Параметры индексов")
+    st.subheader("2. Параметры модели")
     quota_q = st.number_input(
         "Квота q (тонн)",
         min_value=0.0,
@@ -305,59 +449,85 @@ with st.sidebar:
     )
 
     top_in_neighbors = st.number_input(
-        "topN (входящих поставщиков на регион)",
+        "Крупнейших поставщиков",
         min_value=3,
+        max_value=15,
         value=5,
         step=1,
-        help="Ускорение: считаем критические группы только по topN крупнейшим входящим поставщикам каждого региона.",
+        help=(
+            "Критические группы считаются по N крупнейшим входящим поставщикам. "
+            "Число комбинаций растёт экспоненциально: 2ᴺ − 1."
+        ),
         key="top_in_neighbors",
     )
 
     top_show = st.slider(
-        "Количество отображаемых регионов на графиках wBI",
+        "Регионов на графиках",
         min_value=5,
-        max_value=100,
+        max_value=40,
         value=15,
         step=5,
-        help="Это влияет только на отображение графиков wBI1 и wBI2 (не на расчёт индексов).",
+        help="Влияет только на графики, но не на расчёт индексов.",
         key="top_show",
     )
 
-if not uploaded_files:
-    st.info("Загрузи один или несколько Excel-файлов.")
+if uploaded_files:
+    dfs = []
+    load_errors = []
+    for uploaded_file in uploaded_files:
+        try:
+            dfs.append(load_data(uploaded_file.getvalue()))
+        except Exception as exc:
+            load_errors.append(f"{uploaded_file.name}: {exc}")
+
+    if load_errors:
+        with st.expander("Не удалось прочитать часть файлов", expanded=True):
+            for message in load_errors:
+                st.error(message)
+    if not dfs:
+        st.error("Ни один файл не удалось прочитать. Проверьте структуру Excel-файлов.")
+        st.stop()
+
+    df = pd.concat(dfs, ignore_index=True)
+    source_label = f"Загружено файлов: {len(dfs)}"
+elif use_demo:
+    df = build_demo_data()
+    source_label = "Демо-данные"
+else:
+    st.info(
+        "Загрузите один или несколько Excel-файлов в боковой панели либо включите "
+        "демо-данные, чтобы познакомиться с возможностями приложения."
+    )
+    with st.expander("Как должен быть устроен Excel-файл?"):
+        st.markdown(
+            """
+            Приложение пропускает первые три строки. Следующие две строки должны содержать:
+
+            1. тип товара (объединённые ячейки допустимы);
+            2. регион назначения.
+
+            В первом столбце таблицы ожидается регион-источник, в остальных — объёмы поставок в тоннах.
+            """
+        )
     st.stop()
 
-# UNION. Читаем все файлы и склеиваем строки
-dfs = [load_data(f) for f in uploaded_files]
-df = pd.concat(dfs, ignore_index=True)
 df = remove_aggregates(df)
 
-st.subheader("Объединённый датасет")
-st.caption(f"Файлов загружено: {len(uploaded_files)} | Строк всего: {len(df)}")
+if df.empty or len(df.columns) < 2:
+    st.error("После удаления агрегатов в наборе не осталось данных для анализа.")
+    st.stop()
 
-rows_to_show = st.slider(
-    "Выберите количество отображаемых строк",
-    min_value=10,
-    max_value=300,
-    value=100,
-    step=10,
-    key="rows_to_show",
-)
-st.dataframe(df.head(rows_to_show), use_container_width=True)
-
-# Выбор регионов-источников (region_from)
 region_col = df.columns[0]
 region_values = sorted(df[region_col].dropna().astype(str).str.strip().unique().tolist())
-
 ALL_OPTION = "Все регионы"
-options = [ALL_OPTION] + region_values
-
-selected_regions = st.multiselect(
-    f"Выбери регионы из поля '{region_col}' (можно несколько)",
-    options=options,
-    default=[ALL_OPTION],
-    key="selected_regions",
-)
+with st.sidebar:
+    st.subheader("3. Фильтры")
+    selected_regions = st.multiselect(
+        "Регионы-источники",
+        options=[ALL_OPTION] + region_values,
+        default=[ALL_OPTION],
+        key="selected_regions",
+    )
 
 if (not selected_regions) or (ALL_OPTION in selected_regions):
     selected_regions_effective = region_values
@@ -370,16 +540,18 @@ if not selected_regions:
 
 df_long = build_long(df)
 
-# Фильтр по типу товара
 products = sorted(df_long["product"].dropna().unique().tolist())
-product_selected = st.selectbox(
-    "Тип товара",
-    options=["(Все)"] + products,
-    index=0,
-    key="product_selected",
-)
+with st.sidebar:
+    product_selected = st.selectbox(
+        "Тип товара",
+        options=["Все товары"] + products,
+        index=0,
+        key="product_selected",
+    )
+    st.divider()
+    st.caption(f"Источник: {source_label}")
 
-if product_selected != "(Все)":
+if product_selected != "Все товары":
     df_long_f = df_long[df_long["product"] == product_selected].copy()
 else:
     df_long_f = df_long.copy()
@@ -391,10 +563,23 @@ if df_long_f.empty:
     st.info("После фильтрации по регионам/товару не осталось данных.")
     st.stop()
 
+total_supply = float(df_long_f["value"].sum())
+metric_cols = st.columns(4)
+metric_cols[0].metric("Объём поставок", f"{format_tonnes(total_supply)} т")
+metric_cols[1].metric("Торговых связей", f"{len(df_long_f):,}".replace(",", " "))
+metric_cols[2].metric("Регионов-источников", df_long_f["region_from"].nunique())
+metric_cols[3].metric("Регионов-получателей", df_long_f["region_to"].nunique())
+
+st.markdown(
+    '<div class="tradeflow-note">Настройте квоту, число поставщиков и фильтры в боковой панели — расчёты обновятся автоматически.</div>',
+    unsafe_allow_html=True,
+)
+
 # =========================
 # Суммарные поставки
 # =========================
-st.subheader("Суммарные поставки → регионы-партнёры")
+st.header("Обзор товарных потоков")
+st.caption("Суммарный объём поставок из выбранных регионов по регионам назначения.")
 
 partners = (
     df_long_f
@@ -409,7 +594,7 @@ st.caption(f"Всего регионов-партнёров (ненулевых)
 
 show_all = st.checkbox(
     f"Показать все регионы-партнёры ({partners_cnt})",
-    value=True,
+    value=False,
     key="show_all",
 )
 
@@ -443,21 +628,24 @@ fig_supply.update_traces(
 
 fig_supply = apply_dark_style(
     fig_supply,
-    height=420 + 26 * len(partners_plot),
-    title=f"Суммарные поставки из выбранных регионов → топ {len(partners_plot)} регионов-партнёров",
+    height=min(980, 380 + 28 * len(partners_plot)),
+    title=f"Куда направляются поставки: {len(partners_plot)} регионов",
     x_title="Сумма поставок, тонн",
     y_title="Регион-партнёр",
 )
 
-st.plotly_chart(fig_supply, use_container_width=True)
+st.plotly_chart(fig_supply, width="stretch")
 
 # =========================
 # Прямые индексы
 # =========================
-st.subheader("Weighted Bundle Indices (wBI1, wBI2)")
+st.divider()
+st.header("Прямое влияние")
+st.subheader("Weighted Bundle Indices — wBI₁ и wBI₂")
 st.caption(
-    "Вершины: регионы. Вес ребра: поставки (тонн) из region_from в region_to. "
-    "Критическая группа S для региона i: сумма входящих поставок от S >= q."
+    "wBI₁ оценивает значимость критических групп относительно входящего потока региона, "
+    "а wBI₂ — относительно всей торговой сети. Критической считается группа, чей "
+    f"совокупный объём поставок не ниже {format_tonnes(float(quota_q))} тонн."
 )
 
 indices_df = compute_wbi_indices(
@@ -483,9 +671,6 @@ COLUMN_RENAME = {
 }
 
 indices_df_view = indices_df.rename(columns=COLUMN_RENAME)
-st.dataframe(indices_df_view, use_container_width=True)
-
-st.subheader("Топ-3 критические группы для региона")
 top3_table = (
     indices_df[["region", "critical_groups_top3", "critical_groups_top3_supply"]]
     .rename(columns={
@@ -495,18 +680,22 @@ top3_table = (
     })
 )
 
-st.dataframe(
-    top3_table,
-    use_container_width=True,
-    column_config={
-        "Топ-3 критические группы": st.column_config.TextColumn(width="large"),
-        "Суммарные поставки": st.column_config.TextColumn(width="small"),
-    }
-)
+with st.expander("Таблица индексов и критических групп"):
+    st.dataframe(indices_df_view, width="stretch", hide_index=True)
+    st.markdown("#### Топ-3 критические группы для каждого региона")
+    st.dataframe(
+        top3_table,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Топ-3 критические группы": st.column_config.TextColumn(width="large"),
+            "Суммарные поставки": st.column_config.TextColumn(width="small"),
+        },
+    )
 
 top_show = min(int(top_show), len(indices_df))
 plot_df = indices_df.head(top_show).sort_values("wBI1", ascending=True)
-common_height = 420 + 26 * top_show
+common_height = min(900, 420 + 26 * top_show)
 
 fig_wbi = px.bar(
     plot_df,
@@ -555,11 +744,11 @@ fig_wbi2 = apply_dark_style(
     y_title="Регион",
 )
 
-col_left, col_right = st.columns(2, gap="small")
-with col_left:
-    st.plotly_chart(fig_wbi, use_container_width=True)
-with col_right:
-    st.plotly_chart(fig_wbi2, use_container_width=True)
+tab_wbi1, tab_wbi2 = st.tabs(["wBI₁ · локальная зависимость", "wBI₂ · роль в общей сети"])
+with tab_wbi1:
+    st.plotly_chart(fig_wbi, width="stretch")
+with tab_wbi2:
+    st.plotly_chart(fig_wbi2, width="stretch")
 
 # =========================
 # Непрямое влияние (БЕЗ PRUNING)
@@ -635,18 +824,12 @@ def compute_wbi_indices_indirect_no_pruning(
     edges = edges[edges["w"] > 0].copy()
 
     if edges.empty:
-        return pd.DataFrame(columns=[
-            "region", "wBI1", "wBI2", "in_weight", "in_neighbors_used",
-            "critical_groups_count", "critical_groups_top3", "critical_groups_top3_supply"
-        ])
+        return empty_indices_frame()
 
     edges_ind = _indirect_edges_maxmin_no_pruning(edges=edges, d=int(d))
 
     if edges_ind.empty:
-        return pd.DataFrame(columns=[
-            "region", "wBI1", "wBI2", "in_weight", "in_neighbors_used",
-            "critical_groups_count", "critical_groups_top3", "critical_groups_top3_supply"
-        ])
+        return empty_indices_frame()
 
     df_long_ind = edges_ind.rename(columns={"w": "value"})
 
@@ -659,7 +842,11 @@ def compute_wbi_indices_indirect_no_pruning(
 
 # UI для непрямого влияния
 st.divider()
-st.header("Непрямое влияние (Indirect influence)")
+st.header("Непрямое влияние")
+st.caption(
+    "Показывает потенциальные связи через цепочки посредников. Вес непрямой связи — "
+    "лучшее узкое место среди всех путей выбранной длины (max–min)."
+)
 
 use_indirect = st.checkbox(
     "Посчитать индексы wBI₁/wBI₂ на графе непрямого влияния",
@@ -672,27 +859,27 @@ use_indirect = st.checkbox(
 )
 
 if use_indirect:
-    col_a, col_b = st.columns([1, 3])
+    col_a, col_b = st.columns([1, 2])
     with col_a:
         d_indirect = st.number_input("Длина пути", min_value=2, max_value=5, value=2, step=1)
     with col_b:
-        pass
+        st.warning(
+            "Расчёт выполняется без отсечения путей и на плотной сети может занять заметное время.",
+            icon="⚠️",
+        )
 
-    indices_ind_df = compute_wbi_indices_indirect_no_pruning(
-        df_long=df_long_f,
-        quota_q=float(quota_q),
-        d=int(d_indirect),
-        top_in_neighbors=int(top_in_neighbors),
-    )
+    with st.spinner("Строим сеть непрямого влияния…"):
+        indices_ind_df = compute_wbi_indices_indirect_no_pruning(
+            df_long=df_long_f,
+            quota_q=float(quota_q),
+            d=int(d_indirect),
+            top_in_neighbors=int(top_in_neighbors),
+        )
 
     if indices_ind_df.empty:
         st.info("Не удалось посчитать непрямое влияние: нет путей нужной длины или веса нулевые.")
     else:
-        st.subheader("wBI на графе непрямого влияния")
         indices_ind_view = indices_ind_df.rename(columns=COLUMN_RENAME)
-        st.dataframe(indices_ind_view, use_container_width=True)
-
-        st.subheader("Сравнение: прямое vs непрямое")
         cmp = (
             indices_df[["region", "wBI1", "wBI2"]]
             .merge(
@@ -714,18 +901,30 @@ if use_indirect:
             "wBI1_indirect": "wBI₁ (непрямое)",
             "wBI2_indirect": "wBI₂ (непрямое)",
         })
-        st.dataframe(cmp_view, use_container_width=True)
+        with st.expander("Сравнение прямого и непрямого влияния"):
+            st.dataframe(cmp_view, width="stretch", hide_index=True)
+            st.markdown("#### Индексы непрямого влияния")
+            st.dataframe(indices_ind_view, width="stretch", hide_index=True)
 
-        # убираем нули для графиков
-        df_wbi_indirect = cmp[cmp["wBI1_indirect"] > 0]
-        df_wbi2_indirect = cmp[cmp["wBI2_indirect"] > 0]
+        # Отбираем top-N отдельно для каждого индекса — заголовок и данные теперь совпадают.
+        df_wbi_indirect = (
+            cmp[cmp["wBI1_indirect"] > 0]
+            .sort_values("wBI1_indirect", ascending=False)
+            .head(top_show)
+            .sort_values("wBI1_indirect", ascending=True)
+        )
+        df_wbi2_indirect = (
+            cmp[cmp["wBI2_indirect"] > 0]
+            .sort_values("wBI2_indirect", ascending=False)
+            .head(top_show)
+            .sort_values("wBI2_indirect", ascending=True)
+        )
 
-        col_l, col_r = st.columns(2, gap="small")
+        tab_ind_1, tab_ind_2 = st.tabs(["wBI₁ · непрямое влияние", "wBI₂ · непрямое влияние"])
 
-        with col_l:
-            st.subheader("wBI₁ на графе непрямого влияния")
+        with tab_ind_1:
             fig_wbi_indirect = px.bar(
-                df_wbi_indirect.sort_values("wBI1_indirect", ascending=False),
+                df_wbi_indirect,
                 x="wBI1_indirect",
                 y="region",
                 orientation="h",
@@ -738,17 +937,16 @@ if use_indirect:
             )
             fig_wbi_indirect = apply_dark_style(
                 fig_wbi_indirect,
-                height=420 + 26 * len(df_wbi_indirect),
-                title=f"Топ-{min(top_show, len(df_wbi_indirect))} регионов по wBI₁ (непрямое влияние)",
+                height=min(900, 420 + 26 * len(df_wbi_indirect)),
+                title=f"Топ-{len(df_wbi_indirect)} регионов по wBI₁ — непрямое влияние",
                 x_title="wBI₁ (непрямое влияние)",
                 y_title="Регион",
             )
-            st.plotly_chart(fig_wbi_indirect, use_container_width=True)
+            st.plotly_chart(fig_wbi_indirect, width="stretch")
 
-        with col_r:
-            st.subheader("wBI₂ на графе непрямого влияния")
+        with tab_ind_2:
             fig_wbi2_indirect = px.bar(
-                df_wbi2_indirect.sort_values("wBI2_indirect", ascending=False),
+                df_wbi2_indirect,
                 x="wBI2_indirect",
                 y="region",
                 orientation="h",
@@ -761,9 +959,51 @@ if use_indirect:
             )
             fig_wbi2_indirect = apply_dark_style(
                 fig_wbi2_indirect,
-                height=420 + 26 * len(df_wbi2_indirect),
-                title=f"Топ-{min(top_show, len(df_wbi2_indirect))} регионов по wBI₂ (непрямое влияние)",
+                height=min(900, 420 + 26 * len(df_wbi2_indirect)),
+                title=f"Топ-{len(df_wbi2_indirect)} регионов по wBI₂ — непрямое влияние",
                 x_title="wBI₂ (непрямое влияние)",
                 y_title="Регион",
             )
-            st.plotly_chart(fig_wbi2_indirect, use_container_width=True)
+            st.plotly_chart(fig_wbi2_indirect, width="stretch")
+
+st.divider()
+st.header("Данные и экспорт")
+st.caption("Проверьте преобразованный набор и скачайте результаты текущего расчёта.")
+
+with st.expander("Предпросмотр исходной таблицы"):
+    max_preview_rows = min(300, len(df))
+    if max_preview_rows <= 5:
+        rows_to_show = max_preview_rows
+    else:
+        rows_to_show = st.slider(
+            "Количество строк",
+            min_value=5,
+            max_value=max_preview_rows,
+            value=min(25, max_preview_rows),
+            step=5,
+            key="rows_to_show",
+        )
+    st.dataframe(df.head(rows_to_show), width="stretch", hide_index=True)
+
+download_left, download_right = st.columns(2)
+with download_left:
+    st.download_button(
+        "Скачать индексы CSV",
+        data=indices_df_view.to_csv(index=False).encode("utf-8-sig"),
+        file_name="tradeflow_indices.csv",
+        mime="text/csv",
+        width="stretch",
+    )
+with download_right:
+    st.download_button(
+        "Скачать потоки CSV",
+        data=df_long_f.to_csv(index=False).encode("utf-8-sig"),
+        file_name="tradeflow_flows.csv",
+        mime="text/csv",
+        width="stretch",
+    )
+
+st.caption(
+    "Демо-набор синтетический и предназначен только для знакомства с интерфейсом. "
+    "Расчёты по загруженным файлам выполняются в памяти текущей сессии."
+)

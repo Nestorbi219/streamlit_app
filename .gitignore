@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Local data and exports
+*.xlsx
+*.xls
+tradeflow_*.csv
+
+# Editors and OS files
+.DS_Store
+.idea/
+.vscode/
