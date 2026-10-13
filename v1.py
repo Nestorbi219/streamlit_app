@@ -72,26 +72,32 @@ st.markdown(
 # =========================
 # Список регионов-исключений
 # =========================
+# Агрегаты (РФ, федеральные округа) и «составные» субъекты, которые в таблицах Росстата
+# дублируют свои части: Архангельская область = Архангельская обл. (кроме НАО) + НАО,
+# Тюменская область = Тюменская обл. (кроме ХМАО и ЯНАО) + ХМАО + ЯНАО.
+# Части (НАО, ХМАО, ЯНАО, Чукотский АО и др.) — самостоятельные узлы сети.
 EXCLUDE = {
     "российская федерация",
     "центральный федеральный округ",
     "северо-западный федеральный округ",
-    "чукотский автономный округ",
     "южный федеральный округ",
     "северо-кавказский федеральный округ",
     "приволжский федеральный округ",
     "уральский федеральный округ",
     "сибирский федеральный округ",
     "дальневосточный федеральный округ",
-    "ненецкий автономный округ (архангельская область)",
-    "ханты-мансийский автономный округ — югра (тюменская область)",
-    "ямало-ненецкий автономный округ (тюменская область)",
-    "тюменская область (кроме ханты-мансийского автономного округа - югры и ямало-ненецкого автономного округа)",
+    "архангельская область",
+    "тюменская область",
 }
 
 # =========================
 # Датасет
 # =========================
+# Ориентация таблиц Росстата «Межрегиональная торговля основными пищевыми продуктами
+# и зерном»: по горизонтали (столбцы) — субъекты, откуда производится ВЫВОЗ,
+# по вертикали (строки) — субъекты, куда осуществляется ВВОЗ.
+# Поэтому первый столбец — регион-получатель (region_to), а регион в шапке столбца —
+# регион-поставщик (region_from).
 @st.cache_data(show_spinner=False)
 def load_data(file_bytes: bytes) -> pd.DataFrame:
     # читаем без заголовков: после первых 3 строк идут 2 строки "шапки"
@@ -106,7 +112,7 @@ def load_data(file_bytes: bytes) -> pd.DataFrame:
     # 0-я строка: тип товара (merged -> будут NaN)
     header_product = raw.iloc[0].copy().ffill()
 
-    # 1-я строка: названия регионов (реальные колонки)
+    # 1-я строка: регионы-поставщики (вывоз)
     header_region = raw.iloc[1].copy()
 
     # данные начинаются со 2-й строки
@@ -116,10 +122,10 @@ def load_data(file_bytes: bytes) -> pd.DataFrame:
     cols = []
     for j in range(df.shape[1]):
         if j == 0:
-            cols.append("region_from")
+            cols.append("region_to")  # первый столбец — регион-получатель (ввоз)
         else:
             prod = (
-                str(header_product.iloc[j]).strip()
+                str(header_product.iloc[j]).replace("\xa0", " ").strip()
                 if pd.notna(header_product.iloc[j])
                 else "UNKNOWN_PRODUCT"
             )
@@ -132,24 +138,24 @@ def load_data(file_bytes: bytes) -> pd.DataFrame:
 
     df.columns = cols
 
-    # убираем из колонок РФ и федеральные округа
-    cols_keep = ["region_from"]
+    # убираем из колонок РФ, федеральные округа и составные субъекты
+    cols_keep = ["region_to"]
     for c in df.columns[1:]:
         s = str(c)
 
         if "|" in s:
-            region_part = s.split("|", 1)[1].strip().lower()
+            region_part = s.rsplit("|", 1)[1].strip().lower()
         else:
             region_part = s.strip().lower()
 
-        if region_part in EXCLUDE:
+        if region_part in EXCLUDE or "федеральный округ" in region_part:
             continue
 
         cols_keep.append(c)
 
     df = df[cols_keep].copy()
-    df["region_from"] = df["region_from"].astype(str).str.strip()
-    df = df[~df["region_from"].str.lower().isin({"", "nan", "none"})]
+    df["region_to"] = df["region_to"].astype(str).str.strip()
+    df = df[~df["region_to"].str.lower().isin({"", "nan", "none"})]
 
     return df
 
@@ -167,13 +173,14 @@ def build_demo_data() -> pd.DataFrame:
         "Астраханская область",
         "Республика Дагестан",
     ]
-    products = ["Зерно", "Овощи"]
-    data: dict[str, list[object]] = {"region_from": regions}
+    products = ["Зерно, тонна", "Овощи, тонна"]
+    # та же ориентация, что у таблиц Росстата: строки — получатели, столбцы — поставщики
+    data: dict[str, list[object]] = {"region_to": regions}
 
     for product_index, product in enumerate(products):
-        for destination_index, destination in enumerate(regions):
+        for source_index, source in enumerate(regions):
             values = []
-            for source_index, _source in enumerate(regions):
+            for destination_index, _destination in enumerate(regions):
                 if source_index == destination_index:
                     values.append(0)
                     continue
@@ -182,7 +189,7 @@ def build_demo_data() -> pd.DataFrame:
                     + (product_index + 1) * 620
                 ) % 5400 + 250
                 values.append(float(amount))
-            data[f"{product} | {destination}"] = values
+            data[f"{product} | {source}"] = values
 
     return pd.DataFrame(data)
 
@@ -198,18 +205,32 @@ def remove_aggregates(df: pd.DataFrame) -> pd.DataFrame:
     # убираем строки-агрегаты
     df = df[~df[first_col].str.lower().isin(EXCLUDE)].copy()
 
-    # убираем столбцы-агрегаты (по названию колонки)
+    # убираем столбцы-агрегаты (по региону в названии колонки)
     cols_keep = []
     for c in df.columns:
-        cc = str(c).strip().lower()
-        if cc not in EXCLUDE and "федеральный округ" not in cc and cc != "российская федерация":
+        cc = str(c).rsplit("|", 1)[-1].strip().lower()
+        if cc not in EXCLUDE and "федеральный округ" not in cc:
             cols_keep.append(c)
 
     return df[cols_keep].copy()
 
 
+def split_product_unit(name: str) -> tuple[str, str]:
+    """«Мука, тонна» -> («Мука», «тонна»). Единица — текст после последней запятой."""
+    name = str(name).strip()
+    if "," in name:
+        product, unit = name.rsplit(",", 1)
+        return product.strip(), unit.strip()
+    return name, "не указана"
+
+
 def build_long(df: pd.DataFrame) -> pd.DataFrame:
-    id_col = "region_from"
+    """Широкая таблица Росстата -> рёбра (region_from, region_to, product, unit, value).
+
+    region_to — значение первого столбца (регион ввоза),
+    region_from — регион из шапки столбца (регион вывоза).
+    """
+    id_col = "region_to"
     value_cols = [c for c in df.columns if c != id_col]
 
     df_long = df.melt(
@@ -219,12 +240,16 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
         value_name="value",
     )
 
-    pr = df_long["prod_region"].astype(str).str.split("|", n=1, expand=True, regex=False)
-    df_long["product"] = pr[0].astype(str).str.strip()
-    df_long["region_to"] = pr[1].astype(str).str.strip()
+    pr = df_long["prod_region"].astype(str).str.rsplit("|", n=1, expand=True)
+    if pr.shape[1] < 2:
+        pr[1] = None
+    df_long["region_from"] = pr[1].astype(str).str.strip()
+    prod_unit = pr[0].astype(str).map(split_product_unit)
+    df_long["product"] = prod_unit.str[0]
+    df_long["unit"] = prod_unit.str[1]
 
-    mask_bad = df_long["region_to"].isin(["", "None", "nan", "<NA>"])
-    df_long.loc[mask_bad, "region_to"] = df_long.loc[mask_bad, "prod_region"].astype(str).str.strip()
+    mask_bad = df_long["region_from"].isin(["", "None", "nan", "<NA>"])
+    df_long.loc[mask_bad, "region_from"] = df_long.loc[mask_bad, "prod_region"].astype(str).str.strip()
 
     df_long = df_long.drop(columns=["prod_region"])
 
@@ -238,15 +263,15 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
     # убираем петли
     df_long = df_long[df_long["region_from"] != df_long["region_to"]]
 
-    # убираем агрегаты после split
+    # убираем агрегаты после split (с обеих сторон ребра)
     df_long = df_long[
         ~df_long["region_from"].str.lower().isin(EXCLUDE)
         & ~df_long["region_to"].str.lower().isin(EXCLUDE)
+        & ~df_long["region_from"].str.lower().str.contains("федеральный округ", na=False)
         & ~df_long["region_to"].str.lower().str.contains("федеральный округ", na=False)
-        & (df_long["region_to"].str.lower() != "российская федерация")
     ]
 
-    return df_long
+    return df_long[["region_from", "region_to", "product", "unit", "value"]]
 
 
 # =========================
@@ -255,10 +280,15 @@ def build_long(df: pd.DataFrame) -> pd.DataFrame:
 INDEX_COLUMNS = [
     "region",
     "wBI1",
+    "wBI1_norm",
     "wBI2",
     "in_weight",
+    "quota",
     "in_neighbors_used",
     "in_neighbors",
+    "top1_supplier",
+    "top1_share",
+    "min_group_size",
     "critical_groups_count",
     "critical_groups_top3",
     "critical_groups_top3_supply",
@@ -273,14 +303,23 @@ def compute_wbi_indices(
     df_long: pd.DataFrame,
     quota_q: float,
     top_in_neighbors: int = 15,
+    quota_mode: str = "share",
+    quota_map: dict | None = None,
 ) -> pd.DataFrame:
     """
     wBI1 / wBI2
 
     Вершина i = region_to (получатель).
-    Вес ребра w_{ji} = поставки (тонн) из region_from=j в region_to=i.
+    Вес ребра w_{ji} = поставки из region_from=j в region_to=i.
 
-    Критическая группа S для i: сумма входящих поставок от S >= q.
+    Критическая группа S для i: сумма входящих поставок от S >= q_i, где
+      quota_mode="share":    q_i = quota_q * (суммарный входящий поток i), 0 < quota_q <= 1;
+      quota_mode="absolute": q_i = quota_q (в единицах веса);
+      quota_map — явные квоты {регион: q_i} (используются для графа непрямого влияния).
+
+    wBI1_norm = wBI1 / 2^(m-1), где m — число учтённых поставщиков: верхняя граница wBI1
+    равна 2^(m-1), поэтому нормированный индекс лежит в [0, 1] и сопоставим для регионов
+    с разным числом поставщиков.
     """
 
     edges = (
@@ -301,15 +340,27 @@ def compute_wbi_indices(
         inc = inc[inc["w"] > 0]
         in_weight = float(inc["w"].sum())
 
+        if quota_map is not None:
+            quota_i = float(quota_map.get(region_i, float("inf")))
+        elif quota_mode == "share":
+            quota_i = float(quota_q) * in_weight
+        else:
+            quota_i = float(quota_q)
+
         if in_weight <= 0 or inc.empty:
             results.append(
                 dict(
                     region=region_i,
                     wBI1=0.0,
+                    wBI1_norm=0.0,
                     wBI2=0.0,
                     in_weight=in_weight,
+                    quota=quota_i,
                     in_neighbors_used=0,
                     in_neighbors=(),
+                    top1_supplier="",
+                    top1_share=0.0,
+                    min_group_size=0,
                     critical_groups_count=0,
                     critical_groups_top3="",
                     critical_groups_top3_supply="",
@@ -327,6 +378,7 @@ def compute_wbi_indices(
         wbi1_i = 0.0
         wbi2_i = 0.0
         critical_groups_count = 0
+        min_group_size = 0
         critical_groups = []
 
         for r in range(1, m + 1):
@@ -334,8 +386,10 @@ def compute_wbi_indices(
                 s = 0.0
                 for t in idxs:
                     s += weights[t]
-                if s >= quota_q:
+                if s >= quota_i:
                     critical_groups_count += 1
+                    if min_group_size == 0:
+                        min_group_size = r
                     wbi1_i += s / in_weight
                     wbi2_i += s / total_weight_network
                     names = tuple(in_neighbors[t] for t in idxs)
@@ -352,10 +406,15 @@ def compute_wbi_indices(
             dict(
                 region=region_i,
                 wBI1=float(wbi1_i),
+                wBI1_norm=float(wbi1_i) / (2 ** (m - 1)),
                 wBI2=float(wbi2_i),
                 in_weight=float(in_weight),
+                quota=quota_i,
                 in_neighbors_used=int(m),
                 in_neighbors=in_neighbors,
+                top1_supplier=in_neighbors[0],
+                top1_share=weights[0] / in_weight,
+                min_group_size=int(min_group_size),
                 critical_groups_count=int(critical_groups_count),
                 critical_groups_top3=str(critical_groups_top3),
                 critical_groups_top3_supply=str(critical_groups_top3_supply),
@@ -439,14 +498,37 @@ with st.sidebar:
     )
 
     st.subheader("2. Параметры модели")
-    quota_q = st.number_input(
-        "Квота q (тонн)",
-        min_value=0.0,
-        value=1000.0,
-        step=100.0,
-        help="Критическая группа S для региона i: сумма входящих поставок от S >= q.",
-        key="quota_q",
+    quota_mode_label = st.radio(
+        "Как задать квоту",
+        options=["Доля входящего потока", "Абсолютное значение"],
+        index=0,
+        help=(
+            "Доля: группа S критична для региона i, если обеспечивает не менее α·100% его ввоза — "
+            "регионы разного масштаба сравнимы. Абсолютное значение: порог q в единицах товара."
+        ),
+        key="quota_mode",
     )
+    quota_mode = "share" if quota_mode_label == "Доля входящего потока" else "absolute"
+    if quota_mode == "share":
+        quota_pct = st.slider(
+            "Квота α, % входящего потока",
+            min_value=10,
+            max_value=90,
+            value=50,
+            step=5,
+            help="Критическая группа S для региона i: Σ поставок от S ≥ α · (весь ввоз региона i).",
+            key="quota_pct",
+        )
+        quota_q = quota_pct / 100.0
+    else:
+        quota_q = st.number_input(
+            "Квота q (в единицах товара)",
+            min_value=0.0,
+            value=1000.0,
+            step=100.0,
+            help="Критическая группа S для региона i: сумма входящих поставок от S ≥ q.",
+            key="quota_q",
+        )
 
     top_in_neighbors = st.number_input(
         "Крупнейших поставщиков",
@@ -503,10 +585,13 @@ else:
             """
             Приложение пропускает первые три строки. Следующие две строки должны содержать:
 
-            1. тип товара (объединённые ячейки допустимы);
-            2. регион назначения.
+            1. товар с единицей измерения через запятую, например «Мука, тонна»
+               (объединённые ячейки допустимы);
+            2. регион-поставщик (вывоз).
 
-            В первом столбце таблицы ожидается регион-источник, в остальных — объёмы поставок в тоннах.
+            В первом столбце таблицы ожидается регион-получатель (ввоз), в остальных — объёмы поставок.
+            Это стандартная ориентация таблиц Росстата: «по горизонтали — субъекты, откуда
+            производится вывоз; по вертикали — субъекты, куда осуществляется ввоз».
             """
         )
     st.stop()
@@ -517,13 +602,30 @@ if df.empty or len(df.columns) < 2:
     st.error("После удаления агрегатов в наборе не осталось данных для анализа.")
     st.stop()
 
-region_col = df.columns[0]
-region_values = sorted(df[region_col].dropna().astype(str).str.strip().unique().tolist())
+df_long = build_long(df)
+
+if df_long.empty:
+    st.error("После очистки в наборе не осталось ненулевых поставок.")
+    st.stop()
+
+region_values = sorted(df_long["region_from"].dropna().astype(str).str.strip().unique().tolist())
 ALL_OPTION = "Все регионы"
+units = sorted(df_long["unit"].dropna().unique().tolist())
+default_unit = units.index("тонна") if "тонна" in units else 0
 with st.sidebar:
     st.subheader("3. Фильтры")
+    unit_selected = st.selectbox(
+        "Единица измерения",
+        options=units,
+        index=default_unit,
+        help=(
+            "Объёмы в разных единицах (тонны, тыс. условных банок, тыс. дкл) нельзя складывать, "
+            "поэтому сеть строится по товарам одной единицы измерения."
+        ),
+        key="unit_selected",
+    )
     selected_regions = st.multiselect(
-        "Регионы-источники",
+        "Регионы-поставщики",
         options=[ALL_OPTION] + region_values,
         default=[ALL_OPTION],
         key="selected_regions",
@@ -538,23 +640,23 @@ if not selected_regions:
     st.warning("Выбери хотя бы один регион.")
     st.stop()
 
-df_long = build_long(df)
-
-products = sorted(df_long["product"].dropna().unique().tolist())
+df_long_unit = df_long[df_long["unit"] == unit_selected]
+products = sorted(df_long_unit["product"].dropna().unique().tolist())
 with st.sidebar:
     product_selected = st.selectbox(
         "Тип товара",
         options=["Все товары"] + products,
         index=0,
+        help="«Все товары» — все товары выбранной единицы измерения.",
         key="product_selected",
     )
     st.divider()
     st.caption(f"Источник: {source_label}")
 
 if product_selected != "Все товары":
-    df_long_f = df_long[df_long["product"] == product_selected].copy()
+    df_long_f = df_long_unit[df_long_unit["product"] == product_selected].copy()
 else:
-    df_long_f = df_long.copy()
+    df_long_f = df_long_unit.copy()
 
 # фильтр по выбранным регионам-источникам
 df_long_f = df_long_f[df_long_f["region_from"].isin([str(x).strip() for x in selected_regions_effective])]
@@ -565,9 +667,9 @@ if df_long_f.empty:
 
 total_supply = float(df_long_f["value"].sum())
 metric_cols = st.columns(4)
-metric_cols[0].metric("Объём поставок", f"{format_tonnes(total_supply)} т")
+metric_cols[0].metric("Объём поставок", f"{format_tonnes(total_supply)} {unit_selected}")
 metric_cols[1].metric("Торговых связей", f"{len(df_long_f):,}".replace(",", " "))
-metric_cols[2].metric("Регионов-источников", df_long_f["region_from"].nunique())
+metric_cols[2].metric("Регионов-поставщиков", df_long_f["region_from"].nunique())
 metric_cols[3].metric("Регионов-получателей", df_long_f["region_to"].nunique())
 
 st.markdown(
@@ -623,15 +725,15 @@ fig_supply = px.bar(
 fig_supply.update_traces(
     marker_color="#74b9ff",
     texttemplate="%{text:,.0f}".replace(",", " "),
-    hovertemplate="<b>%{y}</b><br>%{x:,.0f}".replace(",", " ") + " тонн<extra></extra>",
+    hovertemplate="<b>%{y}</b><br>%{x:,.0f}".replace(",", " ") + f" {unit_selected}<extra></extra>",
 )
 
 fig_supply = apply_dark_style(
     fig_supply,
     height=min(980, 380 + 28 * len(partners_plot)),
     title=f"Куда направляются поставки: {len(partners_plot)} регионов",
-    x_title="Сумма поставок, тонн",
-    y_title="Регион-партнёр",
+    x_title=f"Сумма поставок, {unit_selected}",
+    y_title="Регион-получатель",
 )
 
 st.plotly_chart(fig_supply, width="stretch")
@@ -642,16 +744,23 @@ st.plotly_chart(fig_supply, width="stretch")
 st.divider()
 st.header("Прямое влияние")
 st.subheader("Weighted Bundle Indices — wBI₁ и wBI₂")
+quota_text = (
+    f"не ниже {quota_q:.0%} входящего потока региона"
+    if quota_mode == "share"
+    else f"не ниже {format_tonnes(float(quota_q))} {unit_selected}"
+)
 st.caption(
     "wBI₁ оценивает значимость критических групп относительно входящего потока региона, "
-    "а wBI₂ — относительно всей торговой сети. Критической считается группа, чей "
-    f"совокупный объём поставок не ниже {format_tonnes(float(quota_q))} тонн."
+    "а wBI₂ — относительно всей торговой сети. wBI₁ (норм.) = wBI₁ / 2^(m−1) лежит в [0, 1] "
+    "и сопоставим для регионов с разным числом поставщиков. Критической считается группа "
+    f"поставщиков с совокупным объёмом {quota_text}."
 )
 
 indices_df = compute_wbi_indices(
     df_long=df_long_f,
     quota_q=float(quota_q),
     top_in_neighbors=int(top_in_neighbors),
+    quota_mode=quota_mode,
 )
 
 if indices_df.empty:
@@ -661,10 +770,15 @@ if indices_df.empty:
 COLUMN_RENAME = {
     "region": "Регион",
     "wBI1": "wBI₁",
+    "wBI1_norm": "wBI₁ (норм.)",
     "wBI2": "wBI₂",
-    "in_weight": "Суммарные входящие поставки, тонн",
+    "in_weight": f"Суммарный ввоз, {unit_selected}",
+    "quota": f"Квота q_i, {unit_selected}",
     "in_neighbors_used": "Число учтённых поставщиков",
     "in_neighbors": "Ключевые регионы-поставщики",
+    "top1_supplier": "Крупнейший поставщик",
+    "top1_share": "Доля крупнейшего поставщика",
+    "min_group_size": "Размер минимальной критической группы",
     "critical_groups_count": "Число критических групп",
     "critical_groups_top3": "Критические группы",
     "critical_groups_top3_supply": "Суммарные поставки",
@@ -807,6 +921,8 @@ def compute_wbi_indices_indirect_no_pruning(
     quota_q: float,
     d: int = 2,
     top_in_neighbors: int = 15,
+    quota_mode: str = "share",
+    direct_in_weight: dict | None = None,
 ) -> pd.DataFrame:
     """
     wBI1/wBI2 на графе непрямого влияния длины d (БЕЗ pruning).
@@ -815,6 +931,10 @@ def compute_wbi_indices_indirect_no_pruning(
       1) строим прямые ребра (агрегация),
       2) преобразуем их в ребра непрямого влияния длины d по max-min (без pruning),
       3) пересчитываем wBI1/wBI2 обычной функцией compute_wbi_indices.
+
+    Квота — параметр вершины: при quota_mode="share" для региона i используется
+    q_i = α · (прямой ввоз региона i), т.е. тот же порог в единицах товара, что и
+    на прямом графе (сумма весов графа непрямого влияния физическим потоком не является).
     """
     edges = (
         df_long.groupby(["region_from", "region_to"], as_index=False)["value"]
@@ -833,10 +953,18 @@ def compute_wbi_indices_indirect_no_pruning(
 
     df_long_ind = edges_ind.rename(columns={"w": "value"})
 
+    quota_map = None
+    if quota_mode == "share":
+        if direct_in_weight is None:
+            direct_in_weight = edges.groupby("region_to")["w"].sum().to_dict()
+        quota_map = {r: float(quota_q) * float(w) for r, w in direct_in_weight.items()}
+
     return compute_wbi_indices(
         df_long=df_long_ind,
         quota_q=float(quota_q),
         top_in_neighbors=int(top_in_neighbors),
+        quota_mode=quota_mode,
+        quota_map=quota_map,
     )
 
 
@@ -874,6 +1002,8 @@ if use_indirect:
             quota_q=float(quota_q),
             d=int(d_indirect),
             top_in_neighbors=int(top_in_neighbors),
+            quota_mode=quota_mode,
+            direct_in_weight=dict(zip(indices_df["region"], indices_df["in_weight"])),
         )
 
     if indices_ind_df.empty:
