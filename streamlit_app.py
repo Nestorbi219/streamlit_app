@@ -1,4 +1,3 @@
-"""Canonical entry point for Streamlit Community Cloud."""
 
 import runpy
 

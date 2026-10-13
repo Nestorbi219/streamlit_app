@@ -10,7 +10,7 @@ import streamlit as st
 # =========================
 st.set_page_config(
     page_title="TradeFlow — анализ межрегиональной торговли",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
 )
 
@@ -865,7 +865,7 @@ with tab_wbi2:
     st.plotly_chart(fig_wbi2, width="stretch")
 
 # =========================
-# Непрямое влияние (БЕЗ PRUNING)
+# Непрямое влияние 
 # =========================
 def _indirect_edges_maxmin_no_pruning(edges: pd.DataFrame, d: int = 2) -> pd.DataFrame:
     """

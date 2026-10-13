@@ -1,7 +1,4 @@
-"""Полный пересчёт для статьи: таблицы (results.json) и рисунки (fig/*.png).
 
-Запуск: python3 -I scripts/analysis.py  (из /home/claude/nirs)
-"""
 import json
 import pickle
 import sys
@@ -13,8 +10,8 @@ import pandas as pd
 from scipy.stats import spearmanr
 
 sys.path.insert(0, str(Path(__file__).parent))
-from load import APP_EXCLUDE, clean  # noqa: E402
-from wbi import edges_from, indirect, wbi  # noqa: E402
+from load import APP_EXCLUDE, clean  
+from wbi import edges_from, indirect, wbi  
 
 ROOT = Path(__file__).resolve().parents[1]
 ALPHA, N, D = 0.5, 5, 2
