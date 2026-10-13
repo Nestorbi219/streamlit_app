@@ -20,3 +20,10 @@ tradeflow_*.csv
 .DS_Store
 .idea/
 .vscode/
+
+# Results of research scripts
+data/
+*.pkl
+results.json
+
+fig/
